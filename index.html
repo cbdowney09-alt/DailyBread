@@ -1,0 +1,664 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Daily Bread - Christian Social Media</title>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.39.3/dist/umd/supabase.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <meta name="theme-color" content="#d97706">
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+    const { createClient } = supabase;
+
+    // ============================================
+    // 🔧 CONFIGURATION - ADD YOUR SUPABASE CREDENTIALS HERE
+    // ============================================
+    const SUPABASE_URL = 'https://ogormkqpzduorssxfqbh.supabase.co';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9nb3Jta3FwemR1b3Jzc3hmcWJoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjMwNzIzNTAsImV4cCI6MjA3ODY0ODM1MH0.BW8xp8Ebmu7y7KZum3NDRuXJIf__mRL0kexuttNif8M';
+
+    const supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    /* 
+    ============================================
+    DATABASE SETUP - Run this SQL in Supabase:
+    ============================================
+
+    CREATE TABLE IF NOT EXISTS profiles (
+      id UUID REFERENCES auth.users PRIMARY KEY,
+      display_name TEXT NOT NULL,
+      bio TEXT,
+      is_public BOOLEAN DEFAULT true,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS posts (
+      id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+      user_id UUID REFERENCES auth.users NOT NULL,
+      content TEXT NOT NULL,
+      post_type TEXT NOT NULL CHECK (post_type IN ('prayer', 'encouragement', 'verse')),
+      is_anonymous BOOLEAN DEFAULT false,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS interactions (
+      id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+      post_id UUID REFERENCES posts ON DELETE CASCADE NOT NULL,
+      user_id UUID REFERENCES auth.users NOT NULL,
+      type TEXT NOT NULL CHECK (type IN ('amen', 'reply')),
+      content TEXT,
+      is_anonymous BOOLEAN DEFAULT false,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+      UNIQUE(post_id, user_id, type)
+    );
+
+    ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE posts ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE interactions ENABLE ROW LEVEL SECURITY;
+
+    CREATE POLICY "Public profiles viewable" ON profiles FOR SELECT USING (is_public = true OR auth.uid() = id);
+    CREATE POLICY "Users update own profile" ON profiles FOR UPDATE USING (auth.uid() = id);
+    CREATE POLICY "Users insert own profile" ON profiles FOR INSERT WITH CHECK (auth.uid() = id);
+    CREATE POLICY "Posts viewable by all" ON posts FOR SELECT USING (true);
+    CREATE POLICY "Users insert own posts" ON posts FOR INSERT WITH CHECK (auth.uid() = user_id);
+    CREATE POLICY "Users delete own posts" ON posts FOR DELETE USING (auth.uid() = user_id);
+    CREATE POLICY "Interactions viewable" ON interactions FOR SELECT USING (true);
+    CREATE POLICY "Users insert interactions" ON interactions FOR INSERT WITH CHECK (auth.uid() = user_id);
+    CREATE POLICY "Users delete interactions" ON interactions FOR DELETE USING (auth.uid() = user_id);
+    */
+
+    const PostCard = ({ post, currentUserId, onAmen, onReply, getPostIcon, formatDate }) => {
+      const [showReplyForm, setShowReplyForm] = useState(false);
+      const [replyContent, setReplyContent] = useState('');
+      const [replyAnonymous, setReplyAnonymous] = useState(false);
+
+      const hasAmened = post.amens?.some((a) => a.user_id === currentUserId);
+      const displayName = post.is_anonymous ? 'Anonymous' : post.profiles?.display_name || 'User';
+
+      const handleSubmitReply = (e) => {
+        e.preventDefault();
+        onReply(post.id, replyContent, replyAnonymous);
+        setReplyContent('');
+        setReplyAnonymous(false);
+        setShowReplyForm(false);
+      };
+
+      const getPostTypeColor = (type) => {
+        switch (type) {
+          case 'prayer': return 'from-purple-500 to-purple-600';
+          case 'encouragement': return 'from-amber-500 to-orange-600';
+          case 'verse': return 'from-blue-500 to-blue-600';
+          default: return 'from-gray-500 to-gray-600';
+        }
+      };
+
+      return (
+        <div className="bg-white rounded-2xl shadow-md p-6 hover:shadow-lg transition">
+          <div className="flex items-start gap-3 mb-3">
+            <div className={`w-12 h-12 rounded-full bg-gradient-to-br ${getPostTypeColor(post.post_type)} flex items-center justify-center text-white text-2xl shrink-0`}>
+              {getPostIcon(post.post_type)}
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-semibold text-amber-900 truncate">{displayName}</span>
+                <span className="text-sm text-amber-600 shrink-0">{formatDate(post.created_at)}</span>
+              </div>
+              <p className="text-sm text-amber-700 capitalize">{post.post_type}</p>
+            </div>
+          </div>
+
+          <p className="text-gray-800 mb-4 whitespace-pre-wrap break-words">{post.content}</p>
+
+          <div className="flex items-center gap-4 pt-3 border-t border-amber-100">
+            <button
+              onClick={() => onAmen(post.id)}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg transition ${
+                hasAmened ? 'bg-amber-600 text-white' : 'bg-amber-100 text-amber-700 hover:bg-amber-200'
+              }`}
+            >
+              <span>🙏</span>
+              <span className="font-semibold">{post.amens?.length || 0}</span>
+            </button>
+            <button
+              onClick={() => setShowReplyForm(!showReplyForm)}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-gray-100 text-gray-700 hover:bg-gray-200 transition"
+            >
+              <span>💬</span>
+              <span className="font-semibold">{post.replies?.length || 0}</span>
+            </button>
+          </div>
+
+          {showReplyForm && (
+            <form onSubmit={handleSubmitReply} className="mt-4 space-y-3">
+              <textarea
+                value={replyContent}
+                onChange={(e) => setReplyContent(e.target.value)}
+                placeholder="Share your thoughts or prayers..."
+                className="w-full px-4 py-2 border border-amber-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 resize-none"
+                rows={3}
+                maxLength={280}
+              />
+              <div className="flex items-center justify-between">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={replyAnonymous}
+                    onChange={(e) => setReplyAnonymous(e.target.checked)}
+                    className="w-4 h-4 text-amber-600 rounded focus:ring-amber-500"
+                  />
+                  <span className="text-sm text-amber-800">Reply anonymously</span>
+                </label>
+                <button
+                  type="submit"
+                  disabled={!replyContent.trim()}
+                  className="px-6 py-2 bg-gradient-to-r from-amber-600 to-orange-600 text-white rounded-lg font-semibold hover:from-amber-700 hover:to-orange-700 transition disabled:opacity-50"
+                >
+                  Reply
+                </button>
+              </div>
+            </form>
+          )}
+
+          {post.replies && post.replies.length > 0 && (
+            <div className="mt-4 space-y-3 pt-4 border-t border-amber-100">
+              {post.replies.map((reply) => (
+                <div key={reply.id} className="bg-amber-50 rounded-lg p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="font-semibold text-amber-900 text-sm">
+                      {reply.is_anonymous ? 'Anonymous' : reply.profiles?.display_name || 'User'}
+                    </span>
+                    <span className="text-xs text-amber-600">{formatDate(reply.created_at)}</span>
+                  </div>
+                  <p className="text-gray-800 text-sm break-words">{reply.content}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    const DailyBreadApp = () => {
+      const [user, setUser] = useState(null);
+      const [profile, setProfile] = useState(null);
+      const [view, setView] = useState('feed');
+      const [posts, setPosts] = useState([]);
+      const [loading, setLoading] = useState(true);
+      const [authMode, setAuthMode] = useState('signin');
+      const [email, setEmail] = useState('');
+      const [password, setPassword] = useState('');
+      const [displayName, setDisplayName] = useState('');
+      const [authError, setAuthError] = useState('');
+      const [newPost, setNewPost] = useState('');
+      const [postType, setPostType] = useState('encouragement');
+      const [isAnonymous, setIsAnonymous] = useState(false);
+      const [showPostForm, setShowPostForm] = useState(false);
+      const [editingProfile, setEditingProfile] = useState(false);
+      const [editDisplayName, setEditDisplayName] = useState('');
+      const [editBio, setEditBio] = useState('');
+      const [editIsPublic, setEditIsPublic] = useState(true);
+      const [viewingProfile, setViewingProfile] = useState(null);
+      const [followRequests, setFollowRequests] = useState([]);
+      const [followingStatus, setFollowingStatus] = useState({});
+
+      useEffect(() => {
+        checkUser();
+        fetchPosts();
+        const { data: authListener } = supabaseClient.auth.onAuthStateChange((event, session) => {
+          setUser(session?.user || null);
+          if (session?.user) {
+            loadProfile(session.user.id);
+            loadFollowRequests(session.user.id);
+          }
+        });
+        return () => authListener?.subscription?.unsubscribe();
+      }, []);
+
+      const checkUser = async () => {
+        const { data: { session } } = await supabaseClient.auth.getSession();
+        setUser(session?.user || null);
+        if (session?.user) {
+          await loadProfile(session.user.id);
+          await loadFollowRequests(session.user.id);
+        }
+        setLoading(false);
+      };
+
+      const loadProfile = async (userId) => {
+        try {
+          const { data, error } = await supabaseClient
+            .from('profiles')
+            .select('*')
+            .eq('id', userId)
+            .maybeSingle();
+
+          if (data) {
+            setProfile(data);
+            setEditDisplayName(data.display_name);
+            setEditBio(data.bio || '');
+            setEditIsPublic(data.is_public);
+            // Only change to createProfile if we're not already in the feed
+            if (view !== 'feed') {
+              setAuthMode('signin');
+            }
+          } else if (!data && !error) {
+            setAuthMode('createProfile');
+            if (view !== 'auth') {
+              setView('auth');
+            }
+          }
+        } catch (err) {
+          console.error('Error loading profile:', err);
+        }
+      };
+
+      const loadFollowRequests = async (userId) => {
+        const { data } = await supabaseClient
+          .from('follows')
+          .select('*, profiles!follows_follower_id_fkey(display_name)')
+          .eq('following_id', userId)
+          .eq('status', 'pending');
+        setFollowRequests(data || []);
+      };
+
+      const fetchPosts = async () => {
+        try {
+          // First, get all posts
+          const { data: postsData, error: postsError } = await supabaseClient
+            .from('posts')
+            .select('*')
+            .order('created_at', { ascending: false });
+          
+          if (postsError) {
+            console.error('Error fetching posts:', postsError);
+            return;
+          }
+          
+          if (postsData && user) {
+            // Get user IDs and profiles
+            const userIds = [...new Set(postsData.map(p => p.user_id))];
+            const { data: profilesData } = await supabaseClient
+              .from('profiles')
+              .select('id, display_name, is_public')
+              .in('id', userIds);
+            
+            // Get approved follows for current user
+            const { data: approvedFollows } = await supabaseClient
+              .from('follows')
+              .select('following_id')
+              .eq('follower_id', user.id)
+              .eq('status', 'approved');
+            
+            const followingIds = new Set(approvedFollows?.map(f => f.following_id) || []);
+            
+            const profilesMap = {};
+            if (profilesData) {
+              profilesData.forEach(p => {
+                profilesMap[p.id] = p;
+              });
+            }
+            
+            // Filter posts based on privacy
+            const filteredPosts = postsData.filter(post => {
+              const postProfile = profilesMap[post.user_id];
+              // Show if: own post, public profile, anonymous, or following approved
+              return post.user_id === user.id || 
+                     post.is_anonymous ||
+                     postProfile?.is_public || 
+                     followingIds.has(post.user_id);
+            });
+            
+            // Attach profiles and interactions
+            const postsWithInteractions = await Promise.all(filteredPosts.map(async (post) => {
+              const { data: amens } = await supabaseClient
+                .from('interactions')
+                .select('id, user_id, post_id')
+                .eq('post_id', post.id)
+                .eq('type', 'amen');
+              
+              const { data: repliesData } = await supabaseClient
+                .from('interactions')
+                .select('*')
+                .eq('post_id', post.id)
+                .eq('type', 'reply')
+                .order('created_at', { ascending: true });
+              
+              const replies = repliesData ? await Promise.all(repliesData.map(async (reply) => {
+                return {
+                  ...reply,
+                  profiles: profilesMap[reply.user_id]
+                };
+              })) : [];
+              
+              return { 
+                ...post, 
+                profiles: profilesMap[post.user_id],
+                amens: amens || [], 
+                replies: replies || [] 
+              };
+            }));
+            
+            setPosts(postsWithInteractions);
+          } else if (postsData && !user) {
+            // Not logged in - show only public posts
+            const userIds = [...new Set(postsData.map(p => p.user_id))];
+            const { data: profilesData } = await supabaseClient
+              .from('profiles')
+              .select('id, display_name, is_public')
+              .in('id', userIds);
+            
+            const profilesMap = {};
+            if (profilesData) {
+              profilesData.forEach(p => {
+                profilesMap[p.id] = p;
+              });
+            }
+            
+            const publicPosts = postsData.filter(post => {
+              const postProfile = profilesMap[post.user_id];
+              return post.is_anonymous || postProfile?.is_public;
+            });
+            
+            const postsWithInteractions = await Promise.all(publicPosts.map(async (post) => {
+              const { data: amens } = await supabaseClient
+                .from('interactions')
+                .select('id, user_id, post_id')
+                .eq('post_id', post.id)
+                .eq('type', 'amen');
+              
+              const { data: repliesData } = await supabaseClient
+                .from('interactions')
+                .select('*')
+                .eq('post_id', post.id)
+                .eq('type', 'reply')
+                .order('created_at', { ascending: true });
+              
+              const replies = repliesData ? repliesData.map(reply => ({
+                ...reply,
+                profiles: profilesMap[reply.user_id]
+              })) : [];
+              
+              return { 
+                ...post, 
+                profiles: profilesMap[post.user_id],
+                amens: amens || [], 
+                replies: replies || [] 
+              };
+            }));
+            
+            setPosts(postsWithInteractions);
+          }
+        } catch (err) {
+          console.error('Error in fetchPosts:', err);
+        }
+      };
+
+      const handleSignUp = async (e) => {
+        e.preventDefault();
+        setAuthError('');
+        const { data, error } = await supabaseClient.auth.signUp({ email, password });
+        if (error) {
+          setAuthError(error.message);
+        } else if (data.user) {
+          setUser(data.user);
+          setAuthMode('createProfile');
+        }
+      };
+
+      const handleSignIn = async (e) => {
+        e.preventDefault();
+        setAuthError('');
+        const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
+        if (error) setAuthError(error.message);
+        else setView('feed');
+      };
+
+      const handleCreateProfile = async (e) => {
+        e.preventDefault();
+        setAuthError('');
+        if (!user || !user.id) {
+          setAuthError('Please wait for authentication to complete');
+          return;
+        }
+        
+        // Check if profile already exists
+        const { data: existingProfile } = await supabaseClient
+          .from('profiles')
+          .select('id')
+          .eq('id', user.id)
+          .maybeSingle();
+        
+        if (existingProfile) {
+          // Profile exists, just load it
+          await loadProfile(user.id);
+          setAuthMode('signin');
+          setView('feed');
+          return;
+        }
+        
+        const { error } = await supabaseClient.from('profiles').insert({ 
+          id: user.id, 
+          display_name: displayName, 
+          is_public: true 
+        });
+        
+        if (error) {
+          setAuthError(error.message);
+        } else {
+          await loadProfile(user.id);
+          setAuthMode('signin');
+          setView('feed');
+        }
+      };
+
+      const handleUpdateProfile = async (e) => {
+        e.preventDefault();
+        const { error } = await supabaseClient.from('profiles').update({ display_name: editDisplayName, bio: editBio, is_public: editIsPublic }).eq('id', user.id);
+        if (!error) {
+          await loadProfile(user.id);
+          setEditingProfile(false);
+        }
+      };
+
+      const handleCreatePost = async (e) => {
+        e.preventDefault();
+        if (!newPost.trim()) return;
+        const { error } = await supabaseClient.from('posts').insert({ user_id: user.id, content: newPost, post_type: postType, is_anonymous: isAnonymous });
+        if (!error) {
+          setNewPost('');
+          setIsAnonymous(false);
+          setShowPostForm(false);
+          await fetchPosts();
+        }
+      };
+
+      const handleAmen = async (postId) => {
+        const existingAmen = posts.find((p) => p.id === postId)?.amens.find((a) => a.user_id === user.id);
+        if (existingAmen) {
+          await supabaseClient.from('interactions').delete().eq('post_id', postId).eq('user_id', user.id).eq('type', 'amen');
+        } else {
+          await supabaseClient.from('interactions').insert({ post_id: postId, user_id: user.id, type: 'amen' });
+        }
+        await fetchPosts();
+      };
+
+      const handleReply = async (postId, content, isAnon) => {
+        if (!content.trim()) return;
+        await supabaseClient.from('interactions').insert({ post_id: postId, user_id: user.id, type: 'reply', content, is_anonymous: isAnon });
+        await fetchPosts();
+      };
+
+      const handleSignOut = async () => {
+        await supabaseClient.auth.signOut();
+        setUser(null);
+        setProfile(null);
+        setView('feed');
+      };
+
+      const getPostIcon = (type) => {
+        switch (type) {
+          case 'prayer': return '🙏';
+          case 'encouragement': return '💛';
+          case 'verse': return '📖';
+          default: return '💬';
+        }
+      };
+
+      const formatDate = (dateString) => {
+        const date = new Date(dateString);
+        const now = new Date();
+        const diff = now - date;
+        const minutes = Math.floor(diff / 60000);
+        const hours = Math.floor(diff / 3600000);
+        const days = Math.floor(diff / 86400000);
+        if (minutes < 1) return 'just now';
+        if (minutes < 60) return `${minutes}m`;
+        if (hours < 24) return `${hours}h`;
+        return `${days}d`;
+      };
+
+      if (loading) {
+        return (
+          <div className="min-h-screen bg-gradient-to-br from-amber-50 to-orange-50 flex items-center justify-center">
+            <div className="text-amber-800 text-xl">Loading Daily Bread...</div>
+          </div>
+        );
+      }
+
+      if (!user || authMode === 'createProfile') {
+        return (
+          <div className="min-h-screen bg-gradient-to-br from-amber-50 to-orange-50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-3xl shadow-2xl p-8 w-full max-w-md">
+              <div className="text-center mb-8">
+                <div className="w-24 h-24 mx-auto mb-4 rounded-full bg-gradient-to-br from-amber-700 to-orange-800 flex items-center justify-center text-white text-4xl">📖</div>
+                <h1 className="text-3xl font-bold text-amber-900">Daily Bread</h1>
+                <p className="text-amber-700 mt-2">Share faith, hope, and love</p>
+              </div>
+              {authMode === 'createProfile' ? (
+                <form onSubmit={handleCreateProfile} className="space-y-4">
+                  <h2 className="text-xl font-semibold text-amber-900 mb-4">Create Your Profile</h2>
+                  <input type="text" placeholder="Display Name" value={displayName} onChange={(e) => setDisplayName(e.target.value)} className="w-full px-4 py-3 border border-amber-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500" required />
+                  <button type="submit" className="w-full bg-gradient-to-r from-amber-600 to-orange-600 text-white py-3 rounded-lg font-semibold hover:from-amber-700 hover:to-orange-700 transition">Create Profile</button>
+                </form>
+              ) : authMode === 'signup' ? (
+                <form onSubmit={handleSignUp} className="space-y-4">
+                  <input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full px-4 py-3 border border-amber-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500" required />
+                  <input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full px-4 py-3 border border-amber-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500" required />
+                  {authError && <p className="text-red-600 text-sm">{authError}</p>}
+                  <button type="submit" className="w-full bg-gradient-to-r from-amber-600 to-orange-600 text-white py-3 rounded-lg font-semibold hover:from-amber-700 hover:to-orange-700 transition">Sign Up</button>
+                  <button type="button" onClick={() => setAuthMode('signin')} className="w-full text-amber-700 hover:text-amber-900 transition">Already have an account? Sign In</button>
+                </form>
+              ) : (
+                <form onSubmit={handleSignIn} className="space-y-4">
+                  <input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full px-4 py-3 border border-amber-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500" required />
+                  <input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full px-4 py-3 border border-amber-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500" required />
+                  {authError && <p className="text-red-600 text-sm">{authError}</p>}
+                  <button type="submit" className="w-full bg-gradient-to-r from-amber-600 to-orange-600 text-white py-3 rounded-lg font-semibold hover:from-amber-700 hover:to-orange-700 transition">Sign In</button>
+                  <button type="button" onClick={() => setAuthMode('signup')} className="w-full text-amber-700 hover:text-amber-900 transition">Need an account? Sign Up</button>
+                </form>
+              )}
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div className="min-h-screen bg-gradient-to-br from-amber-50 to-orange-50">
+          <header className="bg-white border-b border-amber-200 sticky top-0 z-50 shadow-sm">
+            <div className="max-w-2xl mx-auto px-4 py-4 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-amber-700 to-orange-800 flex items-center justify-center text-white text-xl">📖</div>
+                <h1 className="text-2xl font-bold text-amber-900">Daily Bread</h1>
+              </div>
+              <div className="flex gap-2">
+                <button onClick={() => setView('feed')} className={`px-4 py-2 rounded-lg transition ${view === 'feed' ? 'bg-amber-600 text-white' : 'text-amber-700 hover:bg-amber-100'}`}>Feed</button>
+                <button onClick={() => setView('profile')} className={`px-4 py-2 rounded-lg transition ${view === 'profile' ? 'bg-amber-600 text-white' : 'text-amber-700 hover:bg-amber-100'}`}>Profile</button>
+              </div>
+            </div>
+          </header>
+          <main className="max-w-2xl mx-auto px-4 py-6">
+            {view === 'feed' ? (
+              <>
+                <button onClick={() => setShowPostForm(!showPostForm)} className="w-full mb-6 bg-gradient-to-r from-amber-600 to-orange-600 text-white py-4 rounded-2xl font-semibold hover:from-amber-700 hover:to-orange-700 transition shadow-lg">
+                  {showPostForm ? '✕ Cancel' : '✝️ Share Your Heart'}
+                </button>
+                {showPostForm && (
+                  <div className="bg-white rounded-2xl shadow-lg p-6 mb-6">
+                    <form onSubmit={handleCreatePost} className="space-y-4">
+                      <div className="flex gap-2">
+                        <button type="button" onClick={() => setPostType('prayer')} className={`flex-1 py-2 rounded-lg transition ${postType === 'prayer' ? 'bg-purple-600 text-white' : 'bg-purple-100 text-purple-700 hover:bg-purple-200'}`}>🙏 Prayer</button>
+                        <button type="button" onClick={() => setPostType('encouragement')} className={`flex-1 py-2 rounded-lg transition ${postType === 'encouragement' ? 'bg-amber-600 text-white' : 'bg-amber-100 text-amber-700 hover:bg-amber-200'}`}>💛 Encouragement</button>
+                        <button type="button" onClick={() => setPostType('verse')} className={`flex-1 py-2 rounded-lg transition ${postType === 'verse' ? 'bg-blue-600 text-white' : 'bg-blue-100 text-blue-700 hover:bg-blue-200'}`}>📖 Verse</button>
+                      </div>
+                      <textarea value={newPost} onChange={(e) => setNewPost(e.target.value)} placeholder={postType === 'prayer' ? 'Share your prayer request...' : postType === 'verse' ? 'Share a verse that touched your heart...' : 'Share words of encouragement...'} className="w-full px-4 py-3 border border-amber-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 min-h-32 resize-none" maxLength={postType === 'prayer' ? 500 : 280} />
+                      <div className="flex items-center justify-between">
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input type="checkbox" checked={isAnonymous} onChange={(e) => setIsAnonymous(e.target.checked)} className="w-5 h-5 text-amber-600 rounded focus:ring-amber-500" />
+                          <span className="text-sm text-amber-800">Post anonymously</span>
+                        </label>
+                        <span className="text-sm text-amber-600">{newPost.length}/{postType === 'prayer' ? 500 : 280}</span>
+                      </div>
+                      <button type="submit" disabled={!newPost.trim()} className="w-full bg-gradient-to-r from-amber-600 to-orange-600 text-white py-3 rounded-lg font-semibold hover:from-amber-700 hover:to-orange-700 transition disabled:opacity-50">Post</button>
+                    </form>
+                  </div>
+                )}
+                <div className="space-y-4">
+                  {posts.map((post) => <PostCard key={post.id} post={post} currentUserId={user.id} onAmen={handleAmen} onReply={handleReply} getPostIcon={getPostIcon} formatDate={formatDate} />)}
+                  {posts.length === 0 && <div className="text-center py-12 text-amber-700"><p className="text-lg">No posts yet. Be the first to share!</p></div>}
+                </div>
+              </>
+            ) : (
+              <div className="bg-white rounded-2xl shadow-lg p-6">
+                {editingProfile ? (
+                  <form onSubmit={handleUpdateProfile} className="space-y-4">
+                    <h2 className="text-2xl font-bold text-amber-900 mb-4">Edit Profile</h2>
+                    <div>
+                      <label className="block text-sm font-medium text-amber-800 mb-2">Display Name</label>
+                      <input type="text" value={editDisplayName} onChange={(e) => setEditDisplayName(e.target.value)} className="w-full px-4 py-2 border border-amber-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500" required />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-amber-800 mb-2">Bio</label>
+                      <textarea value={editBio} onChange={(e) => setEditBio(e.target.value)} className="w-full px-4 py-2 border border-amber-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 min-h-24 resize-none" maxLength={200} />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input type="checkbox" checked={editIsPublic} onChange={(e) => setEditIsPublic(e.target.checked)} className="w-5 h-5 text-amber-600 rounded focus:ring-amber-500" />
+                      <label className="text-sm text-amber-800">Make profile public (visible to everyone)</label>
+                    </div>
+                    <div className="flex gap-3">
+                      <button type="submit" className="flex-1 bg-gradient-to-r from-amber-600 to-orange-600 text-white py-2 rounded-lg font-semibold hover:from-amber-700 hover:to-orange-700 transition">Save</button>
+                      <button type="button" onClick={() => setEditingProfile(false)} className="flex-1 bg-gray-200 text-gray-700 py-2 rounded-lg font-semibold hover:bg-gray-300 transition">Cancel</button>
+                    </div>
+                  </form>
+                ) : (
+                  <>
+                    <div className="text-center mb-6">
+                      <div className="w-24 h-24 mx-auto mb-4 rounded-full bg-gradient-to-br from-amber-700 to-orange-800 flex items-center justify-center text-white text-4xl">{profile?.display_name?.charAt(0).toUpperCase()}</div>
+                      <h2 className="text-2xl font-bold text-amber-900">{profile?.display_name}</h2>
+                      <p className="text-amber-700 mt-2">{profile?.bio || 'No bio yet'}</p>
+                      <p className="text-sm text-amber-600 mt-2">{profile?.is_public ? '🌍 Public Profile' : '🔒 Private Profile'}</p>
+                    </div>
+                    <div className="space-y-3">
+                      <button onClick={() => setEditingProfile(true)} className="w-full bg-gradient-to-r from-amber-600 to-orange-600 text-white py-3 rounded-lg font-semibold hover:from-amber-700 hover:to-orange-700 transition">Edit Profile</button>
+                      <button onClick={handleSignOut} className="w-full bg-gray-200 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-300 transition">Sign Out</button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </main>
+        </div>
+      );
+    };
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<DailyBreadApp />);
+  </script>
+</body>
+</html>
