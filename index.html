@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  
   <title>Daily Bread - Christian Social Media</title>
   <link rel="manifest" href="/manifest.json">
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
@@ -661,5 +662,12 @@
     const root = ReactDOM.createRoot(document.getElementById('root'));
     root.render(<DailyBreadApp />);
   </script>
+  <script>
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("/DailyBread/sw.js")
+      .then(() => console.log("Service worker registered!"));
+  }
+</script>
+
 </body>
 </html>
