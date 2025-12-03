@@ -61,9 +61,30 @@
       UNIQUE(post_id, user_id, type)
     );
 
+    CREATE TABLE IF NOT EXISTS follows (
+      id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+      follower_id UUID REFERENCES auth.users NOT NULL,
+      following_id UUID REFERENCES auth.users NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'approved')) DEFAULT 'approved',
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+      UNIQUE(follower_id, following_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS notifications (
+      id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+      user_id UUID REFERENCES auth.users NOT NULL,
+      type TEXT NOT NULL CHECK (type IN ('follow_request', 'follow_accepted', 'amen', 'reply')),
+      from_user_id UUID REFERENCES auth.users NOT NULL,
+      post_id UUID REFERENCES posts ON DELETE CASCADE,
+      is_read BOOLEAN DEFAULT false,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    );
+
     ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
     ALTER TABLE posts ENABLE ROW LEVEL SECURITY;
     ALTER TABLE interactions ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE follows ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE notifications ENABLE ROW LEVEL SECURITY;
 
     CREATE POLICY "Public profiles viewable" ON profiles FOR SELECT USING (is_public = true OR auth.uid() = id);
     CREATE POLICY "Users update own profile" ON profiles FOR UPDATE USING (auth.uid() = id);
@@ -74,6 +95,14 @@
     CREATE POLICY "Interactions viewable" ON interactions FOR SELECT USING (true);
     CREATE POLICY "Users insert interactions" ON interactions FOR INSERT WITH CHECK (auth.uid() = user_id);
     CREATE POLICY "Users delete interactions" ON interactions FOR DELETE USING (auth.uid() = user_id);
+    CREATE POLICY "Follows viewable" ON follows FOR SELECT USING (auth.uid() = follower_id OR auth.uid() = following_id);
+    CREATE POLICY "Users create follows" ON follows FOR INSERT WITH CHECK (auth.uid() = follower_id);
+    CREATE POLICY "Users delete follows" ON follows FOR DELETE USING (auth.uid() = follower_id OR auth.uid() = following_id);
+    CREATE POLICY "Users update follows" ON follows FOR UPDATE USING (auth.uid() = following_id);
+    CREATE POLICY "Users view own notifications" ON notifications FOR SELECT USING (auth.uid() = user_id);
+    CREATE POLICY "System inserts notifications" ON notifications FOR INSERT WITH CHECK (true);
+    CREATE POLICY "Users update own notifications" ON notifications FOR UPDATE USING (auth.uid() = user_id);
+    CREATE POLICY "Users delete own notifications" ON notifications FOR DELETE USING (auth.uid() = user_id);
     */
 
     const PostCard = ({ post, currentUserId, onAmen, onReply, getPostIcon, formatDate }) => {
@@ -106,7 +135,21 @@
           <div className="flex items-start gap-3 mb-3">
             <div className={`w-12 h-12 rounded-full bg-gradient-to-br ${getPostTypeColor(post.post_type)} flex items-center justify-center text-white text-2xl shrink-0`}>
               {getPostIcon(post.post_type)}
-            </div>
+          );
+    };
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<DailyBreadApp />);
+  </script>
+  <script>
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("/DailyBread/sw.js")
+      .then(() => console.log("Service worker registered!"));
+  }
+</script>
+
+</body>
+</html>
             <div className="flex-1 min-w-0">
               <div className="flex items-center justify-between gap-2">
                 <span className="font-semibold text-amber-900 truncate">{displayName}</span>
@@ -209,6 +252,11 @@
       const [viewingProfile, setViewingProfile] = useState(null);
       const [followRequests, setFollowRequests] = useState([]);
       const [followingStatus, setFollowingStatus] = useState({});
+      const [searchQuery, setSearchQuery] = useState('');
+      const [searchResults, setSearchResults] = useState([]);
+      const [showSearch, setShowSearch] = useState(false);
+      const [notifications, setNotifications] = useState([]);
+      const [unreadCount, setUnreadCount] = useState(0);
 
       useEffect(() => {
         checkUser();
@@ -218,10 +266,19 @@
           if (session?.user) {
             loadProfile(session.user.id);
             loadFollowRequests(session.user.id);
+            loadNotifications(session.user.id);
           }
         });
         return () => authListener?.subscription?.unsubscribe();
       }, []);
+
+      useEffect(() => {
+        if (searchQuery.trim().length > 0) {
+          searchUsers();
+        } else {
+          setSearchResults([]);
+        }
+      }, [searchQuery]);
 
       const checkUser = async () => {
         const { data: { session } } = await supabaseClient.auth.getSession();
@@ -229,6 +286,7 @@
         if (session?.user) {
           await loadProfile(session.user.id);
           await loadFollowRequests(session.user.id);
+          await loadNotifications(session.user.id);
         }
         setLoading(false);
       };
@@ -246,7 +304,6 @@
             setEditDisplayName(data.display_name);
             setEditBio(data.bio || '');
             setEditIsPublic(data.is_public);
-            // Only change to createProfile if we're not already in the feed
             if (view !== 'feed') {
               setAuthMode('signin');
             }
@@ -270,9 +327,153 @@
         setFollowRequests(data || []);
       };
 
+      const loadNotifications = async (userId) => {
+        const { data } = await supabaseClient
+          .from('notifications')
+          .select('*, from_user:profiles!notifications_from_user_id_fkey(display_name), post:posts(content)')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: false })
+          .limit(50);
+        setNotifications(data || []);
+        setUnreadCount(data?.filter(n => !n.is_read).length || 0);
+      };
+
+      const searchUsers = async () => {
+        if (!searchQuery.trim()) return;
+        const { data } = await supabaseClient
+          .from('profiles')
+          .select('id, display_name, bio, is_public')
+          .ilike('display_name', `%${searchQuery}%`)
+          .limit(10);
+        
+        if (data && user) {
+          const userIds = data.map(p => p.id);
+          const { data: followsData } = await supabaseClient
+            .from('follows')
+            .select('following_id, status')
+            .eq('follower_id', user.id)
+            .in('following_id', userIds);
+          
+          const followMap = {};
+          followsData?.forEach(f => {
+            followMap[f.following_id] = f.status;
+          });
+          
+          setSearchResults(data.map(p => ({ ...p, followStatus: followMap[p.id] })));
+        } else {
+          setSearchResults(data || []);
+        }
+      };
+
+      const handleFollow = async (targetUserId, isPublic) => {
+        const status = isPublic ? 'approved' : 'pending';
+        const { error } = await supabaseClient
+          .from('follows')
+          .insert({ follower_id: user.id, following_id: targetUserId, status });
+        
+        if (!error) {
+          await supabaseClient.from('notifications').insert({
+            user_id: targetUserId,
+            type: isPublic ? 'follow_accepted' : 'follow_request',
+            from_user_id: user.id
+          });
+          searchUsers();
+          if (viewingProfile?.id === targetUserId) {
+            loadUserProfile(targetUserId);
+          }
+        }
+      };
+
+      const handleUnfollow = async (targetUserId) => {
+        await supabaseClient
+          .from('follows')
+          .delete()
+          .eq('follower_id', user.id)
+          .eq('following_id', targetUserId);
+        searchUsers();
+        if (viewingProfile?.id === targetUserId) {
+          loadUserProfile(targetUserId);
+        }
+      };
+
+      const handleFollowRequest = async (followId, approve) => {
+        if (approve) {
+          const { data: followData } = await supabaseClient
+            .from('follows')
+            .update({ status: 'approved' })
+            .eq('id', followId)
+            .select('follower_id')
+            .single();
+          
+          if (followData) {
+            await supabaseClient.from('notifications').insert({
+              user_id: followData.follower_id,
+              type: 'follow_accepted',
+              from_user_id: user.id
+            });
+          }
+        } else {
+          await supabaseClient.from('follows').delete().eq('id', followId);
+        }
+        loadFollowRequests(user.id);
+        loadNotifications(user.id);
+      };
+
+      const markNotificationRead = async (notificationId) => {
+        await supabaseClient
+          .from('notifications')
+          .update({ is_read: true })
+          .eq('id', notificationId);
+        loadNotifications(user.id);
+      };
+
+      const markAllNotificationsRead = async () => {
+        await supabaseClient
+          .from('notifications')
+          .update({ is_read: true })
+          .eq('user_id', user.id)
+          .eq('is_read', false);
+        loadNotifications(user.id);
+      };
+
+      const loadUserProfile = async (userId) => {
+        const { data: profileData } = await supabaseClient
+          .from('profiles')
+          .select('*')
+          .eq('id', userId)
+          .single();
+        
+        if (profileData) {
+          const { data: followData } = await supabaseClient
+            .from('follows')
+            .select('status')
+            .eq('follower_id', user.id)
+            .eq('following_id', userId)
+            .maybeSingle();
+          
+          const { count: followersCount } = await supabaseClient
+            .from('follows')
+            .select('*', { count: 'exact', head: true })
+            .eq('following_id', userId)
+            .eq('status', 'approved');
+          
+          const { count: followingCount } = await supabaseClient
+            .from('follows')
+            .select('*', { count: 'exact', head: true })
+            .eq('follower_id', userId)
+            .eq('status', 'approved');
+          
+          setViewingProfile({
+            ...profileData,
+            followStatus: followData?.status,
+            followersCount: followersCount || 0,
+            followingCount: followingCount || 0
+          });
+        }
+      };
+
       const fetchPosts = async () => {
         try {
-          // First, get all posts
           const { data: postsData, error: postsError } = await supabaseClient
             .from('posts')
             .select('*')
@@ -284,14 +485,12 @@
           }
           
           if (postsData && user) {
-            // Get user IDs and profiles
             const userIds = [...new Set(postsData.map(p => p.user_id))];
             const { data: profilesData } = await supabaseClient
               .from('profiles')
               .select('id, display_name, is_public')
               .in('id', userIds);
             
-            // Get approved follows for current user
             const { data: approvedFollows } = await supabaseClient
               .from('follows')
               .select('following_id')
@@ -307,17 +506,14 @@
               });
             }
             
-            // Filter posts based on privacy
             const filteredPosts = postsData.filter(post => {
               const postProfile = profilesMap[post.user_id];
-              // Show if: own post, public profile, anonymous, or following approved
               return post.user_id === user.id || 
                      post.is_anonymous ||
                      postProfile?.is_public || 
                      followingIds.has(post.user_id);
             });
             
-            // Attach profiles and interactions
             const postsWithInteractions = await Promise.all(filteredPosts.map(async (post) => {
               const { data: amens } = await supabaseClient
                 .from('interactions')
@@ -349,7 +545,6 @@
             
             setPosts(postsWithInteractions);
           } else if (postsData && !user) {
-            // Not logged in - show only public posts
             const userIds = [...new Set(postsData.map(p => p.user_id))];
             const { data: profilesData } = await supabaseClient
               .from('profiles')
@@ -430,7 +625,6 @@
           return;
         }
         
-        // Check if profile already exists
         const { data: existingProfile } = await supabaseClient
           .from('profiles')
           .select('id')
@@ -438,7 +632,6 @@
           .maybeSingle();
         
         if (existingProfile) {
-          // Profile exists, just load it
           await loadProfile(user.id);
           setAuthMode('signin');
           setView('feed');
@@ -482,11 +675,20 @@
       };
 
       const handleAmen = async (postId) => {
-        const existingAmen = posts.find((p) => p.id === postId)?.amens.find((a) => a.user_id === user.id);
+        const post = posts.find((p) => p.id === postId);
+        const existingAmen = post?.amens.find((a) => a.user_id === user.id);
         if (existingAmen) {
           await supabaseClient.from('interactions').delete().eq('post_id', postId).eq('user_id', user.id).eq('type', 'amen');
         } else {
           await supabaseClient.from('interactions').insert({ post_id: postId, user_id: user.id, type: 'amen' });
+          if (post && post.user_id !== user.id && !post.is_anonymous) {
+            await supabaseClient.from('notifications').insert({
+              user_id: post.user_id,
+              type: 'amen',
+              from_user_id: user.id,
+              post_id: postId
+            });
+          }
         }
         await fetchPosts();
       };
@@ -494,6 +696,15 @@
       const handleReply = async (postId, content, isAnon) => {
         if (!content.trim()) return;
         await supabaseClient.from('interactions').insert({ post_id: postId, user_id: user.id, type: 'reply', content, is_anonymous: isAnon });
+        const post = posts.find((p) => p.id === postId);
+        if (post && post.user_id !== user.id && !post.is_anonymous && !isAnon) {
+          await supabaseClient.from('notifications').insert({
+            user_id: post.user_id,
+            type: 'reply',
+            from_user_id: user.id,
+            post_id: postId
+          });
+        }
         await fetchPosts();
       };
 
@@ -574,14 +785,89 @@
       return (
         <div className="min-h-screen bg-gradient-to-br from-amber-50 to-orange-50">
           <header className="bg-white border-b border-amber-200 sticky top-0 z-50 shadow-sm">
-            <div className="max-w-2xl mx-auto px-4 py-4 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-amber-700 to-orange-800 flex items-center justify-center text-white text-xl">📖</div>
-                <h1 className="text-2xl font-bold text-amber-900">Daily Bread</h1>
+            <div className="max-w-2xl mx-auto px-4 py-4">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-gradient-to-br from-amber-700 to-orange-800 flex items-center justify-center text-white text-xl">📖</div>
+                  <h1 className="text-2xl font-bold text-amber-900">Daily Bread</h1>
+                </div>
+                <button 
+                  onClick={() => setView('notifications')} 
+                  className="relative p-2 rounded-lg hover:bg-amber-100 transition"
+                >
+                  <span className="text-2xl">🔔</span>
+                  {unreadCount > 0 && (
+                    <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center font-bold">
+                      {unreadCount > 9 ? '9+' : unreadCount}
+                    </span>
+                  )}
+                </button>
+              </div>
+              <div className="relative mb-3">
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onFocus={() => setShowSearch(true)}
+                  onBlur={() => setTimeout(() => setShowSearch(false), 200)}
+                  placeholder="Search users..."
+                  className="w-full px-4 py-2 pl-10 border border-amber-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
+                <span className="absolute left-3 top-2.5 text-amber-600">🔍</span>
+                {showSearch && searchResults.length > 0 && (
+                  <div className="absolute top-full left-0 right-0 mt-1 bg-white rounded-lg shadow-lg border border-amber-200 max-h-80 overflow-y-auto z-50">
+                    {searchResults.map((result) => (
+                      <div
+                        key={result.id}
+                        onClick={() => {
+                          loadUserProfile(result.id);
+                          setView('userProfile');
+                          setShowSearch(false);
+                          setSearchQuery('');
+                        }}
+                        className="p-3 hover:bg-amber-50 cursor-pointer border-b border-amber-100 last:border-b-0"
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex-1 min-w-0">
+                            <div className="font-semibold text-amber-900 truncate">{result.display_name}</div>
+                            {result.bio && <div className="text-sm text-amber-700 truncate">{result.bio}</div>}
+                            <div className="text-xs text-amber-600">{result.is_public ? '🌍 Public' : '🔒 Private'}</div>
+                          </div>
+                          {result.id !== user.id && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (result.followStatus === 'approved') {
+                                  handleUnfollow(result.id);
+                                } else if (result.followStatus === 'pending') {
+                                  // Already requested
+                                } else {
+                                  handleFollow(result.id, result.is_public);
+                                }
+                              }}
+                              className={`px-3 py-1 rounded-lg text-sm font-semibold shrink-0 ml-2 ${
+                                result.followStatus === 'approved'
+                                  ? 'bg-gray-200 text-gray-700'
+                                  : result.followStatus === 'pending'
+                                  ? 'bg-amber-200 text-amber-800'
+                                  : 'bg-amber-600 text-white'
+                              }`}
+                            >
+                              {result.followStatus === 'approved' ? 'Following' : result.followStatus === 'pending' ? 'Requested' : 'Follow'}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
               <div className="flex gap-2">
-                <button onClick={() => setView('feed')} className={`px-4 py-2 rounded-lg transition ${view === 'feed' ? 'bg-amber-600 text-white' : 'text-amber-700 hover:bg-amber-100'}`}>Feed</button>
-                <button onClick={() => setView('profile')} className={`px-4 py-2 rounded-lg transition ${view === 'profile' ? 'bg-amber-600 text-white' : 'text-amber-700 hover:bg-amber-100'}`}>Profile</button>
+                <button onClick={() => { setView('feed'); setViewingProfile(null); }} className={`px-4 py-2 rounded-lg transition ${view === 'feed' ? 'bg-amber-600 text-white' : 'text-amber-700 hover:bg-amber-100'}`}>Feed</button>
+                <button onClick={() => { setView('profile'); setViewingProfile(null); }} className={`px-4 py-2 rounded-lg transition ${view === 'profile' ? 'bg-amber-600 text-white' : 'text-amber-700 hover:bg-amber-100'}`}>Profile</button>
+                <button onClick={() => setView('notifications')} className={`px-4 py-2 rounded-lg transition ${view === 'notifications' ? 'bg-amber-600 text-white' : 'text-amber-700 hover:bg-amber-100'}`}>
+                  Notifications {unreadCount > 0 && `(${unreadCount})`}
+                </button>
               </div>
             </div>
           </header>
@@ -616,6 +902,136 @@
                   {posts.length === 0 && <div className="text-center py-12 text-amber-700"><p className="text-lg">No posts yet. Be the first to share!</p></div>}
                 </div>
               </>
+            ) : view === 'notifications' ? (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-2xl font-bold text-amber-900">Notifications</h2>
+                  {unreadCount > 0 && (
+                    <button
+                      onClick={markAllNotificationsRead}
+                      className="text-sm text-amber-600 hover:text-amber-800 font-semibold"
+                    >
+                      Mark all read
+                    </button>
+                  )}
+                </div>
+                {followRequests.length > 0 && (
+                  <div className="bg-white rounded-2xl shadow-md p-6 mb-4">
+                    <h3 className="font-semibold text-amber-900 mb-4">Follow Requests</h3>
+                    <div className="space-y-3">
+                      {followRequests.map((request) => (
+                        <div key={request.id} className="flex items-center justify-between p-3 bg-amber-50 rounded-lg">
+                          <span className="font-medium text-amber-900">{request.profiles.display_name} wants to follow you</span>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => handleFollowRequest(request.id, true)}
+                              className="px-4 py-1 bg-amber-600 text-white rounded-lg text-sm font-semibold hover:bg-amber-700"
+                            >
+                              Accept
+                            </button>
+                            <button
+                              onClick={() => handleFollowRequest(request.id, false)}
+                              className="px-4 py-1 bg-gray-200 text-gray-700 rounded-lg text-sm font-semibold hover:bg-gray-300"
+                            >
+                              Decline
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div className="space-y-3">
+                  {notifications.map((notification) => (
+                    <div
+                      key={notification.id}
+                      onClick={() => markNotificationRead(notification.id)}
+                      className={`bg-white rounded-xl shadow-md p-4 cursor-pointer hover:shadow-lg transition ${
+                        !notification.is_read ? 'border-2 border-amber-400' : ''
+                      }`}
+                    >
+                      <div className="flex items-start gap-3">
+                        <span className="text-2xl">
+                          {notification.type === 'follow_request' ? '👤' : 
+                           notification.type === 'follow_accepted' ? '✅' : 
+                           notification.type === 'amen' ? '🙏' : '💬'}
+                        </span>
+                        <div className="flex-1">
+                          <p className="text-gray-800">
+                            <span className="font-semibold text-amber-900">{notification.from_user?.display_name}</span>
+                            {notification.type === 'follow_request' && ' wants to follow you'}
+                            {notification.type === 'follow_accepted' && ' accepted your follow request'}
+                            {notification.type === 'amen' && ' said Amen to your post'}
+                            {notification.type === 'reply' && ' replied to your post'}
+                          </p>
+                          {notification.post && (
+                            <p className="text-sm text-amber-700 mt-1 truncate">{notification.post.content}</p>
+                          )}
+                          <p className="text-xs text-amber-600 mt-2">{formatDate(notification.created_at)}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  {notifications.length === 0 && (
+                    <div className="text-center py-12 text-amber-700">
+                      <p className="text-lg">No notifications yet</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : view === 'userProfile' && viewingProfile ? (
+              <div className="space-y-4">
+                <button
+                  onClick={() => { setView('feed'); setViewingProfile(null); }}
+                  className="text-amber-600 hover:text-amber-800 font-semibold mb-4"
+                >
+                  ← Back to Feed
+                </button>
+                <div className="bg-white rounded-2xl shadow-lg p-6">
+                  <div className="text-center mb-6">
+                    <div className="w-24 h-24 mx-auto mb-4 rounded-full bg-gradient-to-br from-amber-700 to-orange-800 flex items-center justify-center text-white text-4xl">
+                      {viewingProfile.display_name?.charAt(0).toUpperCase()}
+                    </div>
+                    <h2 className="text-2xl font-bold text-amber-900">{viewingProfile.display_name}</h2>
+                    <p className="text-amber-700 mt-2">{viewingProfile.bio || 'No bio yet'}</p>
+                    <p className="text-sm text-amber-600 mt-2">
+                      {viewingProfile.is_public ? '🌍 Public Profile' : '🔒 Private Profile'}
+                    </p>
+                    <div className="flex justify-center gap-6 mt-4">
+                      <div className="text-center">
+                        <div className="font-bold text-xl text-amber-900">{viewingProfile.followersCount}</div>
+                        <div className="text-sm text-amber-700">Followers</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="font-bold text-xl text-amber-900">{viewingProfile.followingCount}</div>
+                        <div className="text-sm text-amber-700">Following</div>
+                      </div>
+                    </div>
+                  </div>
+                  {viewingProfile.id !== user.id && (
+                    <button
+                      onClick={() => {
+                        if (viewingProfile.followStatus === 'approved') {
+                          handleUnfollow(viewingProfile.id);
+                        } else if (viewingProfile.followStatus !== 'pending') {
+                          handleFollow(viewingProfile.id, viewingProfile.is_public);
+                        }
+                      }}
+                      className={`w-full py-3 rounded-lg font-semibold transition ${
+                        viewingProfile.followStatus === 'approved'
+                          ? 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                          : viewingProfile.followStatus === 'pending'
+                          ? 'bg-amber-200 text-amber-800 cursor-not-allowed'
+                          : 'bg-gradient-to-r from-amber-600 to-orange-600 text-white hover:from-amber-700 hover:to-orange-700'
+                      }`}
+                      disabled={viewingProfile.followStatus === 'pending'}
+                    >
+                      {viewingProfile.followStatus === 'approved' ? 'Unfollow' : 
+                       viewingProfile.followStatus === 'pending' ? 'Follow Request Pending' : 'Follow'}
+                    </button>
+                  )}
+                </div>
+              </div>
             ) : (
               <div className="bg-white rounded-2xl shadow-lg p-6">
                 {editingProfile ? (
@@ -656,18 +1072,3 @@
             )}
           </main>
         </div>
-      );
-    };
-
-    const root = ReactDOM.createRoot(document.getElementById('root'));
-    root.render(<DailyBreadApp />);
-  </script>
-  <script>
-  if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("/DailyBread/sw.js")
-      .then(() => console.log("Service worker registered!"));
-  }
-</script>
-
-</body>
-</html>
